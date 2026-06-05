@@ -24,7 +24,25 @@
  */
 #include "SdSpiCard.h"
 //==============================================================================
+extern "C" void lb_service_background_tasks() __attribute__((weak));
+
 namespace {  // Avoid conflict with another Timeout class.
+constexpr uint32_t LB_BACKGROUND_SERVICE_INTERVAL_US = 5000;
+
+void serviceBackgroundTasksDuringSdBusy() {
+  if (!lb_service_background_tasks) {
+    return;
+  }
+
+  static uint32_t next_service_us = 0;
+  const uint32_t now_us = micros();
+  if (static_cast<int32_t>(now_us - next_service_us) < 0) {
+    return;
+  }
+  next_service_us = now_us + LB_BACKGROUND_SERVICE_INTERVAL_US;
+  lb_service_background_tasks();
+}
+
 class Timeout {
  public:
   Timeout() {}
@@ -613,6 +631,7 @@ bool SdSpiCard::syncDevice() {
 bool SdSpiCard::waitReady(uint16_t ms) {
   Timeout timeout(ms);
   while (spiReceive() != 0XFF) {
+    serviceBackgroundTasksDuringSdBusy();
     if (timeout.timedOut()) {
       return false;
     }
