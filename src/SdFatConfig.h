@@ -184,11 +184,13 @@
 #ifndef USE_SPI_ARRAY_TRANSFER
 #if defined(ARDUINO_ARCH_RP2040)
 #define USE_SPI_ARRAY_TRANSFER 2
+#elif defined(ARDUINO_ARCH_SAMD)
+#define USE_SPI_ARRAY_TRANSFER 2
 #elif defined(ARDUINO_MINIMA) || defined(ARDUINO_UNOR4_WIFI)
 #define USE_SPI_ARRAY_TRANSFER 1
-#else  // defined(ARDUINO_ARCH_RP2040)
+#else  // platform defaults
 #define USE_SPI_ARRAY_TRANSFER 0
-#endif  // defined(ARDUINO_ARCH_RP2040)
+#endif  // platform defaults
 #endif  // USE_SPI_ARRAY_TRANSFER
 //------------------------------------------------------------------------------
 /**
