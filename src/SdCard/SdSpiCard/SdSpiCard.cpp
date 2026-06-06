@@ -24,7 +24,7 @@
  */
 #include "SdSpiCard.h"
 //==============================================================================
-extern "C" void lb_service_background_tasks() __attribute__((weak));
+extern "C" uint8_t lb_service_background_tasks() __attribute__((weak));
 extern "C" void lb_consume_sd_spi_stats(
     uint32_t* wait_count,
     uint32_t* wait_total_us,
@@ -63,16 +63,16 @@ struct LbSdSpiTimerStats {
 };
 
 LbSdSpiTimerStats g_wait_ready_stats;
-LbSdSpiTimerStats g_wait_cmd_stats;
-LbSdSpiTimerStats g_wait_write_data_stats;
-LbSdSpiTimerStats g_wait_write_stop_stats;
-LbSdSpiTimerStats g_wait_cmd_net_stats;
-LbSdSpiTimerStats g_wait_write_data_net_stats;
-LbSdSpiTimerStats g_wait_write_stop_net_stats;
 LbSdSpiTimerStats g_write_start_stats;
 LbSdSpiTimerStats g_write_stop_stats;
-LbSdSpiTimerStats g_write_payload_stats;
 LbSdSpiTimerStats g_background_service_stats;
+uint32_t g_wait_cmd_max_us = 0;
+uint32_t g_wait_write_data_max_us = 0;
+uint32_t g_wait_write_stop_max_us = 0;
+uint32_t g_wait_cmd_net_max_us = 0;
+uint32_t g_wait_write_data_net_max_us = 0;
+uint32_t g_wait_write_stop_net_max_us = 0;
+uint32_t g_write_payload_max_us = 0;
 
 void addSdSpiTimerSample(LbSdSpiTimerStats& stats, uint32_t elapsed_us) {
   if (stats.count < UINT32_MAX) {
@@ -81,6 +81,12 @@ void addSdSpiTimerSample(LbSdSpiTimerStats& stats, uint32_t elapsed_us) {
   stats.total_us += elapsed_us;
   if (elapsed_us > stats.max_us) {
     stats.max_us = elapsed_us;
+  }
+}
+
+void addSdSpiMaxSample(uint32_t& max_us, uint32_t elapsed_us) {
+  if (elapsed_us > max_us) {
+    max_us = elapsed_us;
   }
 }
 
@@ -98,20 +104,25 @@ void consumeSdSpiTimerStats(
   stats.max_us = 0;
 }
 
-LbSdSpiTimerStats* waitContextStats(uint8_t context) {
+void consumeSdSpiMaxStats(uint32_t& max_us, uint32_t* out_max_us) {
+  if (out_max_us) *out_max_us = max_us;
+  max_us = 0;
+}
+
+uint32_t* waitContextStats(uint8_t context) {
   switch (context) {
-    case LB_SD_SPI_WAIT_CMD:        return &g_wait_cmd_stats;
-    case LB_SD_SPI_WAIT_WRITE_DATA: return &g_wait_write_data_stats;
-    case LB_SD_SPI_WAIT_WRITE_STOP: return &g_wait_write_stop_stats;
+    case LB_SD_SPI_WAIT_CMD:        return &g_wait_cmd_max_us;
+    case LB_SD_SPI_WAIT_WRITE_DATA: return &g_wait_write_data_max_us;
+    case LB_SD_SPI_WAIT_WRITE_STOP: return &g_wait_write_stop_max_us;
     default:                        return nullptr;
   }
 }
 
-LbSdSpiTimerStats* waitContextNetStats(uint8_t context) {
+uint32_t* waitContextNetStats(uint8_t context) {
   switch (context) {
-    case LB_SD_SPI_WAIT_CMD:        return &g_wait_cmd_net_stats;
-    case LB_SD_SPI_WAIT_WRITE_DATA: return &g_wait_write_data_net_stats;
-    case LB_SD_SPI_WAIT_WRITE_STOP: return &g_wait_write_stop_net_stats;
+    case LB_SD_SPI_WAIT_CMD:        return &g_wait_cmd_net_max_us;
+    case LB_SD_SPI_WAIT_WRITE_DATA: return &g_wait_write_data_net_max_us;
+    case LB_SD_SPI_WAIT_WRITE_STOP: return &g_wait_write_stop_net_max_us;
     default:                        return nullptr;
   }
 }
@@ -126,10 +137,12 @@ uint32_t serviceBackgroundTasksDuringSdBusy() {
   if (static_cast<int32_t>(now_us - next_service_us) < 0) {
     return 0;
   }
-  next_service_us = now_us + LB_BACKGROUND_SERVICE_INTERVAL_US;
   const uint32_t start_us = micros();
-  lb_service_background_tasks();
+  const uint8_t service_again_now = lb_service_background_tasks();
   const uint32_t elapsed_us = micros() - start_us;
+  next_service_us = service_again_now
+      ? micros()
+      : micros() + LB_BACKGROUND_SERVICE_INTERVAL_US;
   addSdSpiTimerSample(g_background_service_stats, elapsed_us);
   return elapsed_us;
 }
@@ -171,36 +184,12 @@ extern "C" void lb_consume_sd_spi_stats(
       wait_count,
       wait_total_us,
       wait_max_us);
-  consumeSdSpiTimerStats(
-      g_wait_cmd_stats,
-      nullptr,
-      nullptr,
-      wait_cmd_max_us);
-  consumeSdSpiTimerStats(
-      g_wait_write_data_stats,
-      nullptr,
-      nullptr,
-      wait_write_data_max_us);
-  consumeSdSpiTimerStats(
-      g_wait_write_stop_stats,
-      nullptr,
-      nullptr,
-      wait_write_stop_max_us);
-  consumeSdSpiTimerStats(
-      g_wait_cmd_net_stats,
-      nullptr,
-      nullptr,
-      wait_cmd_net_max_us);
-  consumeSdSpiTimerStats(
-      g_wait_write_data_net_stats,
-      nullptr,
-      nullptr,
-      wait_write_data_net_max_us);
-  consumeSdSpiTimerStats(
-      g_wait_write_stop_net_stats,
-      nullptr,
-      nullptr,
-      wait_write_stop_net_max_us);
+  consumeSdSpiMaxStats(g_wait_cmd_max_us, wait_cmd_max_us);
+  consumeSdSpiMaxStats(g_wait_write_data_max_us, wait_write_data_max_us);
+  consumeSdSpiMaxStats(g_wait_write_stop_max_us, wait_write_stop_max_us);
+  consumeSdSpiMaxStats(g_wait_cmd_net_max_us, wait_cmd_net_max_us);
+  consumeSdSpiMaxStats(g_wait_write_data_net_max_us, wait_write_data_net_max_us);
+  consumeSdSpiMaxStats(g_wait_write_stop_net_max_us, wait_write_stop_net_max_us);
   consumeSdSpiTimerStats(
       g_write_start_stats,
       write_start_count,
@@ -216,11 +205,7 @@ extern "C" void lb_consume_sd_spi_stats(
       background_count,
       background_total_us,
       background_max_us);
-  consumeSdSpiTimerStats(
-      g_write_payload_stats,
-      nullptr,
-      nullptr,
-      write_payload_max_us);
+  consumeSdSpiMaxStats(g_write_payload_max_us, write_payload_max_us);
 }
 //==============================================================================
 #if USE_SD_CRC
@@ -814,11 +799,11 @@ bool SdSpiCard::waitReady(uint16_t ms, uint8_t context) {
           ? elapsed_us - wait_background_us
           : 0;
       addSdSpiTimerSample(g_wait_ready_stats, elapsed_us);
-      if (LbSdSpiTimerStats* stats = waitContextStats(context)) {
-        addSdSpiTimerSample(*stats, elapsed_us);
+      if (uint32_t* max_us = waitContextStats(context)) {
+        addSdSpiMaxSample(*max_us, elapsed_us);
       }
-      if (LbSdSpiTimerStats* stats = waitContextNetStats(context)) {
-        addSdSpiTimerSample(*stats, net_us);
+      if (uint32_t* max_us = waitContextNetStats(context)) {
+        addSdSpiMaxSample(*max_us, net_us);
       }
       return false;
     }
@@ -829,11 +814,11 @@ bool SdSpiCard::waitReady(uint16_t ms, uint8_t context) {
         ? elapsed_us - wait_background_us
         : 0;
     addSdSpiTimerSample(g_wait_ready_stats, elapsed_us);
-    if (LbSdSpiTimerStats* stats = waitContextStats(context)) {
-      addSdSpiTimerSample(*stats, elapsed_us);
+    if (uint32_t* max_us = waitContextStats(context)) {
+      addSdSpiMaxSample(*max_us, elapsed_us);
     }
-    if (LbSdSpiTimerStats* stats = waitContextNetStats(context)) {
-      addSdSpiTimerSample(*stats, net_us);
+    if (uint32_t* max_us = waitContextNetStats(context)) {
+      addSdSpiMaxSample(*max_us, net_us);
     }
   }
   return true;
@@ -865,7 +850,7 @@ bool SdSpiCard::writeData(uint8_t token, const uint8_t* src) {
   spiSend(token);
   const uint32_t payload_start_us = micros();
   spiSend(src, 512);
-  addSdSpiTimerSample(g_write_payload_stats, micros() - payload_start_us);
+  addSdSpiMaxSample(g_write_payload_max_us, micros() - payload_start_us);
   spiSend(crc >> 8);
   spiSend(crc & 0XFF);
 
