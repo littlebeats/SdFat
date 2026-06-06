@@ -300,7 +300,7 @@ class SdSpiCard {
   void spiStart();
   void spiStop();
   void spiUnselect() { sdCsWrite(m_csPin, true); }
-  bool waitReady(uint16_t ms);
+  bool waitReady(uint16_t ms, uint8_t context);
   bool writeData(uint8_t token, const uint8_t* src);
 #if SPI_DRIVER_SELECT < 2
   void spiActivate() { m_spiDriver.activate(); }
