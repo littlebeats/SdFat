@@ -25,9 +25,57 @@
 #include "SdSpiCard.h"
 //==============================================================================
 extern "C" void lb_service_background_tasks() __attribute__((weak));
+extern "C" void lb_consume_sd_spi_stats(
+    uint32_t* wait_count,
+    uint32_t* wait_total_us,
+    uint32_t* wait_max_us,
+    uint32_t* write_start_count,
+    uint32_t* write_start_total_us,
+    uint32_t* write_start_max_us,
+    uint32_t* write_stop_count,
+    uint32_t* write_stop_total_us,
+    uint32_t* write_stop_max_us,
+    uint32_t* background_count,
+    uint32_t* background_total_us,
+    uint32_t* background_max_us);
 
 namespace {  // Avoid conflict with another Timeout class.
 constexpr uint32_t LB_BACKGROUND_SERVICE_INTERVAL_US = 5000;
+
+struct LbSdSpiTimerStats {
+  uint32_t count = 0;
+  uint32_t total_us = 0;
+  uint32_t max_us = 0;
+};
+
+LbSdSpiTimerStats g_wait_ready_stats;
+LbSdSpiTimerStats g_write_start_stats;
+LbSdSpiTimerStats g_write_stop_stats;
+LbSdSpiTimerStats g_background_service_stats;
+
+void addSdSpiTimerSample(LbSdSpiTimerStats& stats, uint32_t elapsed_us) {
+  if (stats.count < UINT32_MAX) {
+    stats.count++;
+  }
+  stats.total_us += elapsed_us;
+  if (elapsed_us > stats.max_us) {
+    stats.max_us = elapsed_us;
+  }
+}
+
+void consumeSdSpiTimerStats(
+    LbSdSpiTimerStats& stats,
+    uint32_t* count,
+    uint32_t* total_us,
+    uint32_t* max_us) {
+  if (count) *count = stats.count;
+  if (total_us) *total_us = stats.total_us;
+  if (max_us) *max_us = stats.max_us;
+
+  stats.count = 0;
+  stats.total_us = 0;
+  stats.max_us = 0;
+}
 
 void serviceBackgroundTasksDuringSdBusy() {
   if (!lb_service_background_tasks) {
@@ -40,7 +88,9 @@ void serviceBackgroundTasksDuringSdBusy() {
     return;
   }
   next_service_us = now_us + LB_BACKGROUND_SERVICE_INTERVAL_US;
+  const uint32_t start_us = micros();
   lb_service_background_tasks();
+  addSdSpiTimerSample(g_background_service_stats, micros() - start_us);
 }
 
 class Timeout {
@@ -55,6 +105,40 @@ class Timeout {
   uint16_t m_endTime;
 };
 }  // namespace
+extern "C" void lb_consume_sd_spi_stats(
+    uint32_t* wait_count,
+    uint32_t* wait_total_us,
+    uint32_t* wait_max_us,
+    uint32_t* write_start_count,
+    uint32_t* write_start_total_us,
+    uint32_t* write_start_max_us,
+    uint32_t* write_stop_count,
+    uint32_t* write_stop_total_us,
+    uint32_t* write_stop_max_us,
+    uint32_t* background_count,
+    uint32_t* background_total_us,
+    uint32_t* background_max_us) {
+  consumeSdSpiTimerStats(
+      g_wait_ready_stats,
+      wait_count,
+      wait_total_us,
+      wait_max_us);
+  consumeSdSpiTimerStats(
+      g_write_start_stats,
+      write_start_count,
+      write_start_total_us,
+      write_start_max_us);
+  consumeSdSpiTimerStats(
+      g_write_stop_stats,
+      write_stop_count,
+      write_stop_total_us,
+      write_stop_max_us);
+  consumeSdSpiTimerStats(
+      g_background_service_stats,
+      background_count,
+      background_total_us,
+      background_max_us);
+}
 //==============================================================================
 #if USE_SD_CRC
 // CRC functions
@@ -630,11 +714,22 @@ bool SdSpiCard::syncDevice() {
 //------------------------------------------------------------------------------
 bool SdSpiCard::waitReady(uint16_t ms) {
   Timeout timeout(ms);
+  bool did_wait = false;
+  uint32_t wait_start_us = 0;
   while (spiReceive() != 0XFF) {
+    // Keep timing off the ready-fast path; only measure actual busy waits.
+    if (!did_wait) {
+      did_wait = true;
+      wait_start_us = micros();
+    }
     serviceBackgroundTasksDuringSdBusy();
     if (timeout.timedOut()) {
+      addSdSpiTimerSample(g_wait_ready_stats, micros() - wait_start_us);
       return false;
     }
+  }
+  if (did_wait) {
+    addSdSpiTimerSample(g_wait_ready_stats, micros() - wait_start_us);
   }
   return true;
 }
@@ -752,6 +847,7 @@ fail:
 }
 //------------------------------------------------------------------------------
 bool SdSpiCard::writeStart(Sector_t sector) {
+  const uint32_t start_us = micros();
   // use address if not SDHC card
   if (type() != SD_CARD_TYPE_SDHC) {
     sector <<= 9;
@@ -761,23 +857,28 @@ bool SdSpiCard::writeStart(Sector_t sector) {
     goto fail;
   }
   m_state = WRITE_STATE;
+  addSdSpiTimerSample(g_write_start_stats, micros() - start_us);
   return true;
 
 fail:
+  addSdSpiTimerSample(g_write_start_stats, micros() - start_us);
   spiStop();
   return false;
 }
 //------------------------------------------------------------------------------
 bool SdSpiCard::writeStop() {
+  const uint32_t start_us = micros();
   if (!waitReady(SD_WRITE_TIMEOUT)) {
     goto fail;
   }
   spiSend(STOP_TRAN_TOKEN);
   spiStop();
   m_state = IDLE_STATE;
+  addSdSpiTimerSample(g_write_stop_stats, micros() - start_us);
   return true;
 
 fail:
+  addSdSpiTimerSample(g_write_stop_stats, micros() - start_us);
   sdError(SD_CARD_ERROR_STOP_TRAN);
   spiStop();
   return false;
