@@ -40,7 +40,7 @@ extern "C" void lb_consume_sd_spi_stats(
     uint32_t* background_max_us);
 
 namespace {  // Avoid conflict with another Timeout class.
-constexpr uint32_t LB_BACKGROUND_SERVICE_INTERVAL_US = 5000;
+constexpr uint32_t LB_BACKGROUND_SERVICE_INTERVAL_US = 15000;
 
 struct LbSdSpiTimerStats {
   uint32_t count = 0;
