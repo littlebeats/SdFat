@@ -27,6 +27,39 @@
  * \brief Class using only simple SPI library functions.
  */
 #pragma once
+#if defined(ARDUINO_ARCH_SAMD) && USE_SPI_ARRAY_TRANSFER == 2
+extern "C" void lb_note_sd_spi_dma_transfer(
+    uint8_t is_write,
+    uint32_t elapsed_us,
+    uint8_t timeout,
+    uint32_t busych,
+    uint32_t pendch);
+
+inline bool lbSdSpiArrayTransferSAMD(
+    SPIClass* spi,
+    const void* txbuf,
+    void* rxbuf,
+    size_t count,
+    uint8_t is_write) {
+  constexpr uint32_t LB_SPI_DMA_TRANSFER_TIMEOUT_US = 10000;
+  const uint32_t start_us = micros();
+  spi->transfer(txbuf, rxbuf, count, false);
+  while (spi->isBusy()) {
+    const uint32_t elapsed_us = micros() - start_us;
+    if (elapsed_us > LB_SPI_DMA_TRANSFER_TIMEOUT_US) {
+      lb_note_sd_spi_dma_transfer(
+          is_write,
+          elapsed_us,
+          1,
+          DMAC->BUSYCH.reg,
+          DMAC->PENDCH.reg);
+      return false;
+    }
+  }
+  lb_note_sd_spi_dma_transfer(is_write, micros() - start_us, 0, 0, 0);
+  return true;
+}
+#endif  // defined(ARDUINO_ARCH_SAMD) && USE_SPI_ARRAY_TRANSFER == 2
 //------------------------------------------------------------------------------
 inline void SdSpiArduinoDriver::activate() {
   m_spi->beginTransaction(m_spiSettings);
@@ -62,7 +95,13 @@ inline uint8_t SdSpiArduinoDriver::receive(uint8_t* buf, size_t count) {
   memset(buf, 0XFF, count);
   m_spi->transfer(buf, count);
 #elif USE_SPI_ARRAY_TRANSFER < 4
+#if defined(ARDUINO_ARCH_SAMD) && USE_SPI_ARRAY_TRANSFER == 2
+  if (!lbSdSpiArrayTransferSAMD(m_spi, nullptr, buf, count, 0)) {
+    return 1;
+  }
+#else
   m_spi->transfer(nullptr, buf, count);
+#endif
 #elif USE_SPI_ARRAY_TRANSFER == 4
   uint8_t txTmp[512];
   memset(txTmp, 0XFF, sizeof(txTmp));
@@ -96,7 +135,16 @@ inline void SdSpiArduinoDriver::send(const uint8_t* buf, size_t count) {
   }
 #elif USE_SPI_ARRAY_TRANSFER == 2
   // Some systems do not allow const uint8_t*.
+#if defined(ARDUINO_ARCH_SAMD)
+  (void)lbSdSpiArrayTransferSAMD(
+      m_spi,
+      const_cast<uint8_t*>(buf),
+      nullptr,
+      count,
+      1);
+#else
   m_spi->transfer(const_cast<uint8_t*>(buf), nullptr, count);
+#endif
 #elif USE_SPI_ARRAY_TRANSFER < 5
   uint8_t rxTmp[512];
   while (count > 0) {

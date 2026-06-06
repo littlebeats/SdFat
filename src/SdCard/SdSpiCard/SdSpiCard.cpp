@@ -37,7 +37,19 @@ extern "C" void lb_consume_sd_spi_stats(
     uint32_t* write_stop_max_us,
     uint32_t* background_count,
     uint32_t* background_total_us,
-    uint32_t* background_max_us);
+    uint32_t* background_max_us,
+    uint32_t* spi_dma_tx_max_us,
+    uint32_t* spi_dma_rx_max_us,
+    uint32_t* spi_dma_timeout_count,
+    uint32_t* spi_dma_timeout_busych,
+    uint32_t* spi_dma_timeout_pendch);
+extern "C" void lb_note_sd_spi_dma_transfer(
+    uint8_t is_write,
+    uint32_t elapsed_us,
+    uint8_t timeout,
+    uint32_t busych,
+    uint32_t pendch);
+extern "C" uint8_t lb_consume_sd_spi_dma_timeout_pending();
 
 namespace {  // Avoid conflict with another Timeout class.
 constexpr uint32_t LB_BACKGROUND_SERVICE_INTERVAL_US = 30000;
@@ -52,6 +64,12 @@ LbSdSpiTimerStats g_wait_ready_stats;
 LbSdSpiTimerStats g_write_start_stats;
 LbSdSpiTimerStats g_write_stop_stats;
 LbSdSpiTimerStats g_background_service_stats;
+LbSdSpiTimerStats g_spi_dma_tx_stats;
+LbSdSpiTimerStats g_spi_dma_rx_stats;
+uint32_t g_spi_dma_timeout_count = 0;
+uint32_t g_spi_dma_timeout_busych = 0;
+uint32_t g_spi_dma_timeout_pendch = 0;
+uint8_t g_spi_dma_timeout_pending = 0;
 
 void addSdSpiTimerSample(LbSdSpiTimerStats& stats, uint32_t elapsed_us) {
   if (stats.count < UINT32_MAX) {
@@ -105,6 +123,30 @@ class Timeout {
   uint16_t m_endTime;
 };
 }  // namespace
+extern "C" void lb_note_sd_spi_dma_transfer(
+    uint8_t is_write,
+    uint32_t elapsed_us,
+    uint8_t timeout,
+    uint32_t busych,
+    uint32_t pendch) {
+  addSdSpiTimerSample(is_write ? g_spi_dma_tx_stats : g_spi_dma_rx_stats,
+                      elapsed_us);
+  if (timeout) {
+    if (g_spi_dma_timeout_count < UINT32_MAX) {
+      g_spi_dma_timeout_count++;
+    }
+    g_spi_dma_timeout_busych = busych;
+    g_spi_dma_timeout_pendch = pendch;
+    g_spi_dma_timeout_pending = 1;
+  }
+}
+
+extern "C" uint8_t lb_consume_sd_spi_dma_timeout_pending() {
+  const uint8_t pending = g_spi_dma_timeout_pending;
+  g_spi_dma_timeout_pending = 0;
+  return pending;
+}
+
 extern "C" void lb_consume_sd_spi_stats(
     uint32_t* wait_count,
     uint32_t* wait_total_us,
@@ -117,7 +159,12 @@ extern "C" void lb_consume_sd_spi_stats(
     uint32_t* write_stop_max_us,
     uint32_t* background_count,
     uint32_t* background_total_us,
-    uint32_t* background_max_us) {
+    uint32_t* background_max_us,
+    uint32_t* spi_dma_tx_max_us,
+    uint32_t* spi_dma_rx_max_us,
+    uint32_t* spi_dma_timeout_count,
+    uint32_t* spi_dma_timeout_busych,
+    uint32_t* spi_dma_timeout_pendch) {
   consumeSdSpiTimerStats(
       g_wait_ready_stats,
       wait_count,
@@ -138,6 +185,23 @@ extern "C" void lb_consume_sd_spi_stats(
       background_count,
       background_total_us,
       background_max_us);
+  consumeSdSpiTimerStats(
+      g_spi_dma_tx_stats,
+      nullptr,
+      nullptr,
+      spi_dma_tx_max_us);
+  consumeSdSpiTimerStats(
+      g_spi_dma_rx_stats,
+      nullptr,
+      nullptr,
+      spi_dma_rx_max_us);
+  if (spi_dma_timeout_count) *spi_dma_timeout_count = g_spi_dma_timeout_count;
+  if (spi_dma_timeout_busych) *spi_dma_timeout_busych = g_spi_dma_timeout_busych;
+  if (spi_dma_timeout_pendch) *spi_dma_timeout_pendch = g_spi_dma_timeout_pendch;
+
+  g_spi_dma_timeout_count = 0;
+  g_spi_dma_timeout_busych = 0;
+  g_spi_dma_timeout_pendch = 0;
 }
 //==============================================================================
 #if USE_SD_CRC
@@ -759,6 +823,10 @@ bool SdSpiCard::writeData(uint8_t token, const uint8_t* src) {
 #endif  // USE_SD_CRC
   spiSend(token);
   spiSend(src, 512);
+  if (lb_consume_sd_spi_dma_timeout_pending()) {
+    sdError(SD_CARD_ERROR_DMA);
+    goto fail;
+  }
   spiSend(crc >> 8);
   spiSend(crc & 0XFF);
 
