@@ -115,8 +115,8 @@
 // 32K AVR boards.
 #define SDFAT_FILE_TYPE 1
 #else  // defined(__AVR__) && FLASHEND < 0X8000
-// All other boards.
-#define SDFAT_FILE_TYPE 3
+// LB recorder: exFAT only.
+#define SDFAT_FILE_TYPE 2
 #endif  // defined(__AVR__) && FLASHEND < 0X8000
 #endif  // SDFAT_FILE_TYPE
 //------------------------------------------------------------------------------
@@ -323,7 +323,7 @@ typedef uint8_t SdCsPin_t;
  * is non-zero.
  */
 #ifndef CHECK_FLASH_PROGRAMMING
-#define CHECK_FLASH_PROGRAMMING 1
+#define CHECK_FLASH_PROGRAMMING 0
 #endif  // CHECK_FLASH_PROGRAMMING
 //------------------------------------------------------------------------------
 /**
