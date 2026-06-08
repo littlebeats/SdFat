@@ -162,6 +162,12 @@ class ExFatPartition {
     return m_dataCache.sync() && syncDevice();
 #endif  // USE_EXFAT_BITMAP_CACHE
   }
+  void cacheInvalidate() {
+#if USE_EXFAT_BITMAP_CACHE
+    m_bitmapCache.invalidate();
+#endif  // USE_EXFAT_BITMAP_CACHE
+    m_dataCache.invalidate();
+  }
   void dataCacheDirty() { m_dataCache.dirty(); }
   void dataCacheInvalidate() { m_dataCache.invalidate(); }
   uint8_t* dataCachePrepare(Sector_t sector, uint8_t option) {

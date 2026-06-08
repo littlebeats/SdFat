@@ -527,6 +527,95 @@ bool SdSpiCard::isBusy() {
   return rtn;
 }
 //------------------------------------------------------------------------------
+SdTry SdSpiCard::lbdTryStartWrite(Sector_t firstSector) {
+  if (m_lbdWriteTxnState != SdWriteTxnState::Idle || m_state != IDLE_STATE) {
+    sdError(SD_CARD_ERROR_WRITE_START);
+    return SdTry::Error;
+  }
+  if (isBusy()) {
+    return SdTry::WouldBlock;
+  }
+  if (!writeStart(firstSector)) {
+    return SdTry::Error;
+  }
+#if ENABLE_DEDICATED_SPI
+  m_curSector = firstSector;
+#endif  // ENABLE_DEDICATED_SPI
+  m_lbdCurSector = firstSector;
+  m_lbdWriteTxnState = SdWriteTxnState::Writing;
+  return SdTry::Done;
+}
+//------------------------------------------------------------------------------
+SdTry SdSpiCard::lbdTryWriteData512(const uint8_t* src) {
+  if (!src || m_lbdWriteTxnState != SdWriteTxnState::Writing ||
+      m_state != WRITE_STATE) {
+    sdError(SD_CARD_ERROR_WRITE_DATA);
+    return SdTry::Error;
+  }
+  if (isBusy()) {
+    return SdTry::WouldBlock;
+  }
+  if (!m_spiActive) {
+    spiStart();
+  }
+  if (!writeData(WRITE_MULTIPLE_TOKEN, src)) {
+    return SdTry::Error;
+  }
+  m_lbdCurSector++;
+#if ENABLE_DEDICATED_SPI
+  m_curSector = m_lbdCurSector;
+#endif  // ENABLE_DEDICATED_SPI
+  return SdTry::Done;
+}
+//------------------------------------------------------------------------------
+SdTry SdSpiCard::lbdTryStopWrite() {
+  if (m_lbdWriteTxnState == SdWriteTxnState::Writing) {
+    const uint32_t start_us = micros();
+    if (m_state != WRITE_STATE) {
+      sdError(SD_CARD_ERROR_STOP_TRAN);
+      return SdTry::Error;
+    }
+    if (isBusy()) {
+      return SdTry::WouldBlock;
+    }
+    if (!m_spiActive) {
+      spiStart();
+    }
+    spiSend(STOP_TRAN_TOKEN);
+    spiStop();
+    m_state = IDLE_STATE;
+    m_lbdWriteTxnState = SdWriteTxnState::StopTokenSent;
+    addSdSpiTimerSample(g_write_stop_stats, micros() - start_us);
+    return SdTry::WouldBlock;
+  }
+
+  if (m_lbdWriteTxnState == SdWriteTxnState::StopTokenSent) {
+    return lbdTryIdleReady();
+  }
+
+  if (m_state != IDLE_STATE) {
+    sdError(SD_CARD_ERROR_STOP_TRAN);
+    return SdTry::Error;
+  }
+  return isBusy() ? SdTry::WouldBlock : SdTry::Done;
+}
+//------------------------------------------------------------------------------
+SdTry SdSpiCard::lbdTryIdleReady() {
+  if (m_lbdWriteTxnState == SdWriteTxnState::Writing) {
+    sdError(SD_CARD_ERROR_STOP_TRAN);
+    return SdTry::Error;
+  }
+  if (m_state != IDLE_STATE) {
+    sdError(SD_CARD_ERROR_STOP_TRAN);
+    return SdTry::Error;
+  }
+  if (isBusy()) {
+    return SdTry::WouldBlock;
+  }
+  m_lbdWriteTxnState = SdWriteTxnState::Idle;
+  return SdTry::Done;
+}
+//------------------------------------------------------------------------------
 bool SdSpiCard::readData(uint8_t* dst) { return readData(dst, 512); }
 //------------------------------------------------------------------------------
 bool SdSpiCard::readData(uint8_t* dst, size_t count) {
@@ -772,6 +861,10 @@ void SdSpiCard::spiStop() {
 }
 //------------------------------------------------------------------------------
 bool SdSpiCard::syncDevice() {
+  if (m_lbdWriteTxnState != SdWriteTxnState::Idle) {
+    sdError(SD_CARD_ERROR_STOP_TRAN);
+    return false;
+  }
   if (m_state == WRITE_STATE) {
     return writeStop();
   }

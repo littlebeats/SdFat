@@ -93,6 +93,129 @@ bool ExFatFile::contiguousRange(Sector_t* bgnSector, Sector_t* endSector) {
   return true;
 }
 //------------------------------------------------------------------------------
+bool ExFatFile::lbdBeginRawWrite(LbdRawFileInfo* info) {
+  if (!info || !isFile() || !isWritable() || !isContiguous() ||
+      (m_flags & FILE_FLAG_APPEND) || !m_firstCluster ||
+      (m_dataLength & (m_vol->bytesPerSector() - 1)) ||
+      (m_validLength & (m_vol->bytesPerSector() - 1)) ||
+      m_validLength > m_dataLength) {
+    DBG_FAIL_MACRO;
+    goto fail;
+  }
+
+  if (!contiguousRange(&info->firstSector, &info->endSectorInclusive)) {
+    DBG_FAIL_MACRO;
+    goto fail;
+  }
+  if (!sync() || !m_vol->cacheSync()) {
+    DBG_FAIL_MACRO;
+    goto fail;
+  }
+  m_vol->cacheInvalidate();
+  setNoAutoExtend(true);
+  info->reservedBytes = m_dataLength;
+  info->validBytes = m_validLength;
+  info->writeOffset = m_validLength;
+  return true;
+
+fail:
+  m_error |= WRITE_ERROR;
+  return false;
+}
+//------------------------------------------------------------------------------
+bool ExFatFile::lbdCloseAfterRaw(uint64_t finalValidBytes) {
+  if (!lbdCommitValidLength(finalValidBytes)) {
+    return false;
+  }
+  if (finalValidBytes < m_dataLength && !lbdTruncateRaw(finalValidBytes)) {
+    return false;
+  }
+  return close();
+}
+//------------------------------------------------------------------------------
+bool ExFatFile::lbdCommitValidLength(uint64_t validBytes) {
+  if (!isFile() || !isWritable() || !isContiguous() ||
+      (validBytes & (m_vol->bytesPerSector() - 1)) ||
+      validBytes > m_dataLength) {
+    DBG_FAIL_MACRO;
+    goto fail;
+  }
+  m_curPosition = validBytes;
+  m_curCluster = validBytes
+      ? m_firstCluster + ((validBytes - 1) >> m_vol->bytesPerClusterShift())
+      : 0;
+  m_validLength = validBytes;
+  m_flags |= FILE_FLAG_DIR_DIRTY;
+  return sync();
+
+fail:
+  m_error |= WRITE_ERROR;
+  return false;
+}
+//------------------------------------------------------------------------------
+bool ExFatFile::lbdEndRawWrite() {
+  if (!isOpen()) {
+    return false;
+  }
+  setNoAutoExtend(false);
+  return true;
+}
+//------------------------------------------------------------------------------
+bool ExFatFile::lbdMarkRawWritten(uint64_t newWriteOffset) {
+  if (!isFile() || !isWritable() || !isContiguous() ||
+      (newWriteOffset & (m_vol->bytesPerSector() - 1)) ||
+      newWriteOffset > m_dataLength) {
+    DBG_FAIL_MACRO;
+    goto fail;
+  }
+  m_curPosition = newWriteOffset;
+  m_curCluster = newWriteOffset
+      ? m_firstCluster +
+            ((newWriteOffset - 1) >> m_vol->bytesPerClusterShift())
+      : 0;
+  if (newWriteOffset > m_validLength) {
+    m_validLength = newWriteOffset;
+    m_flags |= FILE_FLAG_DIR_DIRTY;
+  }
+  return true;
+
+fail:
+  m_error |= WRITE_ERROR;
+  return false;
+}
+//------------------------------------------------------------------------------
+bool ExFatFile::lbdRawSectorForOffset(uint64_t offset, Sector_t* sector) const {
+  if (!sector || !isContiguous() || !m_firstCluster ||
+      (offset & (m_vol->bytesPerSector() - 1)) || offset >= m_dataLength) {
+    return false;
+  }
+  *sector = firstSector() + (offset >> m_vol->bytesPerSectorShift());
+  return true;
+}
+//------------------------------------------------------------------------------
+bool ExFatFile::lbdTruncateRaw(uint64_t length) {
+  if (!isFile() || !isWritable() || !isContiguous() ||
+      (length & (m_vol->bytesPerSector() - 1)) || length > m_dataLength) {
+    DBG_FAIL_MACRO;
+    goto fail;
+  }
+  if (length == m_dataLength) {
+    return lbdCommitValidLength(length);
+  }
+  if (length > m_validLength) {
+    m_validLength = length;
+  }
+  if (!seekSet(length) || !truncate()) {
+    DBG_FAIL_MACRO;
+    goto fail;
+  }
+  return true;
+
+fail:
+  m_error |= WRITE_ERROR;
+  return false;
+}
+//------------------------------------------------------------------------------
 void ExFatFile::fgetpos(fspos_t* pos) const {
   pos->position = m_curPosition;
   pos->cluster = m_curCluster;

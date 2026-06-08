@@ -140,6 +140,20 @@ class SdSpiCard {
    * \return true if busy else false.
    */
   bool isBusy();
+  /** Try to start an LBD-managed multi-sector write without waiting busy. */
+  SdTry lbdTryStartWrite(Sector_t firstSector);
+  /** Try to write one 512-byte sector without waiting busy. */
+  SdTry lbdTryWriteData512(const uint8_t* src);
+  /** Try to stop an LBD-managed multi-sector write without waiting busy. */
+  SdTry lbdTryStopWrite();
+  /** Try to confirm the card is idle and ready for metadata operations. */
+  SdTry lbdTryIdleReady();
+  /** \return true if an LBD-managed write transaction is open or stopping. */
+  bool lbdInWriteTxn() const {
+    return m_lbdWriteTxnState != SdWriteTxnState::Idle;
+  }
+  /** \return next logical sector for the LBD-managed write transaction. */
+  Sector_t lbdNextSector() const { return m_lbdCurSector; }
   /** \return true if in dedicated SPI state. */
 #if ENABLE_DEDICATED_SPI
   bool isDedicatedSpi() { return m_dedicatedSpi; }
@@ -354,6 +368,8 @@ class SdSpiCard {
     m_beginCalled = false;
     m_csPin = 0;
     m_errorCode = SD_CARD_ERROR_INIT_NOT_CALLED;
+    m_lbdCurSector = 0;
+    m_lbdWriteTxnState = SdWriteTxnState::Idle;
     m_spiActive = false;
     m_state = IDLE_STATE;
     m_status = 0;
@@ -366,6 +382,8 @@ class SdSpiCard {
   bool m_beginCalled;
   SdCsPin_t m_csPin;
   uint8_t m_errorCode;
+  Sector_t m_lbdCurSector;
+  SdWriteTxnState m_lbdWriteTxnState;
   bool m_spiActive;
   uint8_t m_state;
   uint8_t m_status;

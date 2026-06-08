@@ -38,6 +38,15 @@
 
 class ExFatVolume;
 //------------------------------------------------------------------------------
+/** Raw contiguous exFAT file information for LBD-managed sector writes. */
+struct LbdRawFileInfo {
+  Sector_t firstSector;
+  Sector_t endSectorInclusive;
+  uint64_t reservedBytes;
+  uint64_t validBytes;
+  uint64_t writeOffset;
+};
+//------------------------------------------------------------------------------
 /** Expression for path name separator. */
 #define isDirSeparator(c) ((c) == '/')
 //------------------------------------------------------------------------------
@@ -347,6 +356,22 @@ class ExFatFile {
   bool isSystem() const { return m_attributes & FS_ATTRIB_SYSTEM; }
   /** \return True file is writable. */
   bool isWritable() const { return m_flags & FILE_FLAG_WRITE; }
+  /** \return true if generic writes are forbidden from extending allocation. */
+  bool noAutoExtend() const { return m_flags & FILE_FLAG_NO_AUTO_EXTEND; }
+  /** Begin LBD raw writes to a contiguous, preallocated file. */
+  bool lbdBeginRawWrite(LbdRawFileInfo* info);
+  /** Close an LBD raw file after committing/truncating final length. */
+  bool lbdCloseAfterRaw(uint64_t finalValidBytes);
+  /** Commit exFAT ValidDataLength for raw writes. */
+  bool lbdCommitValidLength(uint64_t validBytes);
+  /** End LBD raw mode without closing the file. */
+  bool lbdEndRawWrite();
+  /** Mark in-memory file metadata after raw sector writes. */
+  bool lbdMarkRawWritten(uint64_t newWriteOffset);
+  /** Map a sector-aligned file offset to a physical sector. */
+  bool lbdRawSectorForOffset(uint64_t offset, Sector_t* sector) const;
+  /** Truncate a raw LBD file during a quiesced metadata window. */
+  bool lbdTruncateRaw(uint64_t length);
   /** List directory contents.
    *
    * \param[in] pr Print stream for list.
@@ -725,6 +750,14 @@ class ExFatFile {
   bool seekSet(uint64_t pos);
   /** \return directory set count */
   uint8_t setCount() const { return m_setCount; }
+  /** Forbid generic write() from extending allocation when enabled. */
+  void setNoAutoExtend(bool enable = true) {
+    if (enable) {
+      m_flags |= FILE_FLAG_NO_AUTO_EXTEND;
+    } else {
+      m_flags &= ~FILE_FLAG_NO_AUTO_EXTEND;
+    }
+  }
   /** The sync() call causes all modified data and directory fields
    * to be written to the storage device.
    *
@@ -865,6 +898,7 @@ class ExFatFile {
   static const uint8_t FILE_FLAG_READ = 0X01;
   static const uint8_t FILE_FLAG_WRITE = 0X02;
   static const uint8_t FILE_FLAG_APPEND = 0X08;
+  static const uint8_t FILE_FLAG_NO_AUTO_EXTEND = 0X20;
   static const uint8_t FILE_FLAG_CONTIGUOUS = 0X40;
   static const uint8_t FILE_FLAG_DIR_DIRTY = 0X80;
 

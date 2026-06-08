@@ -29,6 +29,19 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+//------------------------------------------------------------------------------
+/** Nonblocking SD operation result for LBD real-time storage control. */
+enum class SdTry : uint8_t {
+  Done,
+  WouldBlock,
+  Error,
+};
+/** LBD-managed multi-sector write transaction state. */
+enum class SdWriteTxnState : uint8_t {
+  Idle,
+  Writing,
+  StopTokenSent,
+};
 /**
  * \class FsBlockDeviceInterface
  * \brief FsBlockDeviceInterface class.
@@ -45,6 +58,24 @@ class FsBlockDeviceInterface {
    * \return true if busy else false.
    */
   virtual bool isBusy() = 0;
+  /** Try to start an LBD-managed multi-sector write. */
+  virtual SdTry lbdTryStartWrite(Sector_t firstSector) {
+    (void)firstSector;
+    return SdTry::Error;
+  }
+  /** Try to write one 512-byte sector in an LBD-managed transaction. */
+  virtual SdTry lbdTryWriteData512(const uint8_t* src) {
+    (void)src;
+    return SdTry::Error;
+  }
+  /** Try to stop an LBD-managed multi-sector write transaction. */
+  virtual SdTry lbdTryStopWrite() { return SdTry::Error; }
+  /** Try to confirm the card is idle and ready for metadata operations. */
+  virtual SdTry lbdTryIdleReady() { return SdTry::Error; }
+  /** \return true if an LBD-managed write transaction is open or stopping. */
+  virtual bool lbdInWriteTxn() const { return false; }
+  /** \return next logical sector for an LBD-managed write transaction. */
+  virtual Sector_t lbdNextSector() const { return 0; }
   /**
    * Read a sector.
    *

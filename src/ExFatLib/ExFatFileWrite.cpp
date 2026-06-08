@@ -620,6 +620,12 @@ size_t ExFatFile::write(const void* buf, size_t nbyte) {
       goto fail;
     }
   }
+  if ((m_flags & FILE_FLAG_NO_AUTO_EXTEND) &&
+      (m_curPosition > m_dataLength ||
+       nbyte > (m_dataLength - m_curPosition))) {
+    DBG_FAIL_MACRO;
+    goto fail;
+  }
   if (m_curPosition > m_validLength) {
     toFill = m_curPosition - m_validLength;
     if (!seekSet(m_validLength)) {
@@ -653,6 +659,10 @@ size_t ExFatFile::write(const void* buf, size_t nbyte) {
         }
         if (fg == 0) {
           // add cluster if at end of chain
+          if (m_flags & FILE_FLAG_NO_AUTO_EXTEND) {
+            DBG_FAIL_MACRO;
+            goto fail;
+          }
           if (!addCluster()) {
             DBG_FAIL_MACRO;
             goto fail;
@@ -661,6 +671,10 @@ size_t ExFatFile::write(const void* buf, size_t nbyte) {
       } else {
         if (m_firstCluster == 0) {
           // allocate first cluster of file
+          if (m_flags & FILE_FLAG_NO_AUTO_EXTEND) {
+            DBG_FAIL_MACRO;
+            goto fail;
+          }
           if (!addCluster()) {
             DBG_FAIL_MACRO;
             goto fail;
