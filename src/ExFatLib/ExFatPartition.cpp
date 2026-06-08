@@ -125,6 +125,56 @@ fail:
   return false;
 }
 //------------------------------------------------------------------------------
+BitmapRangeState ExFatPartition::bitmapRangeIsFree(
+    Cluster_t cluster,
+    uint32_t count) {
+  if (cluster < 2 || count == 0) {
+    DBG_FAIL_MACRO;
+    return BitmapRangeState::Error;
+  }
+  Cluster_t start = cluster - 2;
+  if ((start + count) > m_clusterCount) {
+    DBG_FAIL_MACRO;
+    return BitmapRangeState::Error;
+  }
+
+  uint16_t sectorSize = 1 << m_bytesPerSectorShift;
+  Sector_t sector = m_clusterHeapStartSector + (start >> (m_bytesPerSectorShift + 3));
+  size_t i = (start >> 3) & m_sectorMask;
+  uint8_t mask = 1 << (start & 7);
+  while (count) {
+    const uint8_t* cache = bitmapCachePrepare(sector++, FsCache::CACHE_FOR_READ);
+    if (!cache) {
+      DBG_FAIL_MACRO;
+      return BitmapRangeState::Error;
+    }
+    for (; i < sectorSize; i++) {
+      for (; mask; mask <<= 1) {
+        if (cache[i] & mask) {
+          return BitmapRangeState::NotFree;
+        }
+        if (--count == 0) {
+          return BitmapRangeState::Free;
+        }
+      }
+      mask = 1;
+    }
+    i = 0;
+  }
+  return BitmapRangeState::Free;
+}
+//------------------------------------------------------------------------------
+bool ExFatPartition::bitmapAllocateExact(Cluster_t cluster, uint32_t count) {
+  const BitmapRangeState state = bitmapRangeIsFree(cluster, count);
+  if (state != BitmapRangeState::Free) {
+    if (state == BitmapRangeState::Error) {
+      DBG_FAIL_MACRO;
+    }
+    return false;
+  }
+  return bitmapModify(cluster, count, true);
+}
+//------------------------------------------------------------------------------
 uint32_t ExFatPartition::chainSize(Cluster_t cluster) {
   uint32_t n = 0;
   int8_t status;

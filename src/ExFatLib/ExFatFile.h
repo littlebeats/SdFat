@@ -38,13 +38,33 @@
 
 class ExFatVolume;
 //------------------------------------------------------------------------------
-/** Raw contiguous exFAT file information for LBD-managed sector writes. */
-struct LbdRawFileInfo {
+/** Physical extent information for LBD-managed sector writes. */
+struct LbdExtent {
+  uint64_t logicalStartBytes;
+  uint64_t lengthBytes;
+  Cluster_t firstCluster;
+  uint32_t clusterCount;
   Sector_t firstSector;
-  Sector_t endSectorInclusive;
-  uint64_t reservedBytes;
-  uint64_t validBytes;
+  Sector_t lastSectorInclusive;
+};
+//------------------------------------------------------------------------------
+/** Raw exFAT file information for LBD-managed sector writes. */
+struct LbdRawFileInfo {
+  uint64_t dataLength;
+  uint64_t validLength;
   uint64_t writeOffset;
+  Cluster_t firstCluster;
+  Cluster_t tailCluster;
+  bool fatChained;
+  LbdExtent activeExtent;
+};
+//------------------------------------------------------------------------------
+enum class LbdAllocResult : uint8_t {
+  Ok,
+  BadState,
+  NoSpace,
+  WouldFragment,
+  IoError,
 };
 //------------------------------------------------------------------------------
 /** Expression for path name separator. */
@@ -358,8 +378,22 @@ class ExFatFile {
   bool isWritable() const { return m_flags & FILE_FLAG_WRITE; }
   /** \return true if generic writes are forbidden from extending allocation. */
   bool noAutoExtend() const { return m_flags & FILE_FLAG_NO_AUTO_EXTEND; }
-  /** Begin LBD raw writes to a contiguous, preallocated file. */
+  /** Begin LBD raw writes to a preallocated file. */
   bool lbdBeginRawWrite(LbdRawFileInfo* info);
+  /** Create the initial physically-contiguous, FAT-chained LBD extent. */
+  LbdAllocResult lbdCreateFatChainedExtentFile(
+      uint64_t initialExtentBytes,
+      LbdExtent* outExtent);
+  /** Append the next LBD extent immediately after the allocation tail. */
+  LbdAllocResult lbdAppendAdjacentExtent(
+      uint64_t extentBytes,
+      LbdExtent* outExtent);
+  /** Append a non-adjacent contiguous free LBD extent. */
+  LbdAllocResult lbdAppendFreeExtent(
+      uint64_t extentBytes,
+      Cluster_t preferredStartCluster,
+      uint32_t searchWindowClusters,
+      LbdExtent* outExtent);
   /** Close an LBD raw file after committing/truncating final length. */
   bool lbdCloseAfterRaw(uint64_t finalValidBytes);
   /** Commit exFAT ValidDataLength for raw writes. */
@@ -367,11 +401,18 @@ class ExFatFile {
   /** End LBD raw mode without closing the file. */
   bool lbdEndRawWrite();
   /** Mark in-memory file metadata after raw sector writes. */
-  bool lbdMarkRawWritten(uint64_t newWriteOffset);
+  bool lbdMarkRawWritten(uint64_t newWriteOffset, const LbdExtent* activeExtent);
   /** Map a sector-aligned file offset to a physical sector. */
   bool lbdRawSectorForOffset(uint64_t offset, Sector_t* sector) const;
+  /** Map a sector-aligned file offset within an active extent to a sector. */
+  bool lbdRawSectorForOffset(
+      uint64_t offset,
+      const LbdExtent* activeExtent,
+      Sector_t* sector) const;
   /** Truncate a raw LBD file during a quiesced metadata window. */
   bool lbdTruncateRaw(uint64_t length);
+  /** \return bytes per exFAT cluster for LBD allocation knobs. */
+  uint32_t lbdBytesPerCluster() const;
   /** List directory contents.
    *
    * \param[in] pr Print stream for list.
@@ -873,6 +914,14 @@ class ExFatFile {
   bool addDirCluster();
   bool cmpName(const DirName_t* dirName, ExName_t* fname);
   uint8_t* dirCache(uint8_t set, uint8_t options);
+  bool lbdFillExtent(
+      uint64_t logicalStartBytes,
+      uint64_t lengthBytes,
+      Cluster_t firstCluster,
+      uint32_t clusterCount,
+      LbdExtent* outExtent) const;
+  bool lbdFindTailCluster(Cluster_t* tailCluster) const;
+  bool lbdWriteFatExtent(Cluster_t firstCluster, uint32_t clusterCount);
   bool hashName(ExName_t* fname);
   bool mkdir(ExFatFile* parent, ExName_t* fname);
 

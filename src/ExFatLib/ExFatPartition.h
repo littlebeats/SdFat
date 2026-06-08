@@ -38,6 +38,12 @@
 /** Type for exFAT partition */
 const uint8_t FAT_TYPE_EXFAT = 64;
 
+enum class BitmapRangeState : int8_t {
+  Error = -1,
+  NotFree = 0,
+  Free = 1,
+};
+
 class ExFatFile;
 //------------------------------------------------------------------------------
 /**
@@ -107,6 +113,8 @@ class ExFatPartition {
    * \return true for success or false for failure.
    */
   bool init(FsBlockDevice* dev, uint8_t part, Sector_t startSector = 0);
+  BitmapRangeState bitmapRangeIsFree(Cluster_t cluster, uint32_t count);
+  bool bitmapAllocateExact(Cluster_t cluster, uint32_t count);
   /**
    * Check for device busy.
    *

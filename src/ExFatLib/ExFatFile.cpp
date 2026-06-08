@@ -93,34 +93,306 @@ bool ExFatFile::contiguousRange(Sector_t* bgnSector, Sector_t* endSector) {
   return true;
 }
 //------------------------------------------------------------------------------
+uint32_t ExFatFile::lbdBytesPerCluster() const {
+  return m_vol ? m_vol->bytesPerCluster() : 0;
+}
+//------------------------------------------------------------------------------
+bool ExFatFile::lbdFillExtent(
+    uint64_t logicalStartBytes,
+    uint64_t lengthBytes,
+    Cluster_t firstCluster,
+    uint32_t clusterCount,
+    LbdExtent* outExtent) const {
+  if (!outExtent || !m_vol || !lengthBytes || !clusterCount ||
+      firstCluster < 2 ||
+      (static_cast<uint64_t>(firstCluster - 2) + clusterCount) >
+          m_vol->clusterCount()) {
+    return false;
+  }
+  outExtent->logicalStartBytes = logicalStartBytes;
+  outExtent->lengthBytes = lengthBytes;
+  outExtent->firstCluster = firstCluster;
+  outExtent->clusterCount = clusterCount;
+  outExtent->firstSector = m_vol->clusterStartSector(firstCluster);
+  outExtent->lastSectorInclusive = outExtent->firstSector +
+      ((lengthBytes - 1) >> m_vol->bytesPerSectorShift());
+  return true;
+}
+//------------------------------------------------------------------------------
+bool ExFatFile::lbdFindTailCluster(Cluster_t* tailCluster) const {
+  if (!tailCluster || !m_vol || !m_firstCluster || !m_dataLength) {
+    return false;
+  }
+  const uint64_t clusterCount64 =
+      (m_dataLength + m_vol->bytesPerCluster() - 1) >>
+          m_vol->bytesPerClusterShift();
+  if (clusterCount64 == 0 || clusterCount64 > UINT32_MAX) {
+    return false;
+  }
+  uint32_t clusterCount = static_cast<uint32_t>(clusterCount64);
+  if (isContiguous()) {
+    *tailCluster = m_firstCluster + clusterCount - 1;
+    return true;
+  }
+  Cluster_t cluster = m_firstCluster;
+  while (--clusterCount) {
+    Cluster_t next = 0;
+    if (m_vol->fatGet(cluster, &next) <= 0) {
+      return false;
+    }
+    cluster = next;
+  }
+  *tailCluster = cluster;
+  return true;
+}
+//------------------------------------------------------------------------------
+bool ExFatFile::lbdWriteFatExtent(Cluster_t firstCluster, uint32_t clusterCount) {
+  if (!m_vol || !clusterCount || firstCluster < 2 ||
+      (static_cast<uint64_t>(firstCluster - 2) + clusterCount) >
+          m_vol->clusterCount()) {
+    return false;
+  }
+  for (uint32_t i = 0; i + 1 < clusterCount; ++i) {
+    if (!m_vol->fatPut(firstCluster + i, firstCluster + i + 1)) {
+      return false;
+    }
+  }
+  return m_vol->fatPut(firstCluster + clusterCount - 1, EXFAT_EOC);
+}
+//------------------------------------------------------------------------------
 bool ExFatFile::lbdBeginRawWrite(LbdRawFileInfo* info) {
-  if (!info || !isFile() || !isWritable() || !isContiguous() ||
+  Cluster_t tailCluster = 0;
+  if (!info || !isFile() || !isWritable() ||
       (m_flags & FILE_FLAG_APPEND) || !m_firstCluster ||
       (m_dataLength & (m_vol->bytesPerSector() - 1)) ||
       (m_validLength & (m_vol->bytesPerSector() - 1)) ||
-      m_validLength > m_dataLength) {
+      m_validLength > m_dataLength || !lbdFindTailCluster(&tailCluster)) {
     DBG_FAIL_MACRO;
     goto fail;
   }
 
-  if (!contiguousRange(&info->firstSector, &info->endSectorInclusive)) {
-    DBG_FAIL_MACRO;
-    goto fail;
+  *info = LbdRawFileInfo{};
+  info->dataLength = m_dataLength;
+  info->validLength = m_validLength;
+  info->writeOffset = m_validLength;
+  info->firstCluster = m_firstCluster;
+  info->tailCluster = tailCluster;
+  info->fatChained = !isContiguous();
+
+  if (m_validLength < m_dataLength) {
+    const uint64_t clusterBytes = m_vol->bytesPerCluster();
+    const uint64_t totalClusters =
+        (m_dataLength + clusterBytes - 1) >> m_vol->bytesPerClusterShift();
+    uint64_t runStartBytes = 0;
+    Cluster_t runFirst = m_firstCluster;
+    Cluster_t cluster = m_firstCluster;
+    uint32_t runCount = 1;
+
+    for (uint64_t i = 1; i < totalClusters; ++i) {
+      Cluster_t next = 0;
+      if (isContiguous()) {
+        next = cluster + 1;
+      } else if (m_vol->fatGet(cluster, &next) <= 0) {
+        DBG_FAIL_MACRO;
+        goto fail;
+      }
+
+      if (next == cluster + 1) {
+        runCount++;
+      } else {
+        const uint64_t runBytes = static_cast<uint64_t>(runCount) * clusterBytes;
+        if (m_validLength < runStartBytes + runBytes) {
+          if (!lbdFillExtent(
+              runStartBytes,
+              runBytes,
+              runFirst,
+              runCount,
+              &info->activeExtent)) {
+            DBG_FAIL_MACRO;
+            goto fail;
+          }
+          break;
+        }
+        runStartBytes += runBytes;
+        runFirst = next;
+        runCount = 1;
+      }
+      cluster = next;
+    }
+
+    if (!info->activeExtent.lengthBytes) {
+      const uint64_t runBytes = static_cast<uint64_t>(runCount) * clusterBytes;
+      if (!lbdFillExtent(
+          runStartBytes,
+          runBytes,
+          runFirst,
+          runCount,
+          &info->activeExtent)) {
+        DBG_FAIL_MACRO;
+        goto fail;
+      }
+    }
   }
+
   if (!sync() || !m_vol->cacheSync()) {
     DBG_FAIL_MACRO;
     goto fail;
   }
   m_vol->cacheInvalidate();
   setNoAutoExtend(true);
-  info->reservedBytes = m_dataLength;
-  info->validBytes = m_validLength;
-  info->writeOffset = m_validLength;
   return true;
 
 fail:
   m_error |= WRITE_ERROR;
   return false;
+}
+//------------------------------------------------------------------------------
+LbdAllocResult ExFatFile::lbdCreateFatChainedExtentFile(
+    uint64_t initialExtentBytes,
+    LbdExtent* outExtent) {
+  if (!outExtent || !isFile() || !isWritable() || m_firstCluster ||
+      m_dataLength || m_validLength || !initialExtentBytes ||
+      (initialExtentBytes & (m_vol->bytesPerCluster() - 1))) {
+    return LbdAllocResult::BadState;
+  }
+  const uint64_t clusterCount64 =
+      initialExtentBytes >> m_vol->bytesPerClusterShift();
+  if (clusterCount64 == 0 || clusterCount64 > UINT32_MAX) {
+    return LbdAllocResult::BadState;
+  }
+  const uint32_t clusterCount = static_cast<uint32_t>(clusterCount64);
+  const Cluster_t firstCluster = m_vol->bitmapFind(0, clusterCount);
+  if (firstCluster == 1) {
+    return LbdAllocResult::NoSpace;
+  }
+  if (firstCluster < 2) {
+    return LbdAllocResult::IoError;
+  }
+  if (!lbdWriteFatExtent(firstCluster, clusterCount) ||
+      !m_vol->bitmapAllocateExact(firstCluster, clusterCount)) {
+    return LbdAllocResult::IoError;
+  }
+
+  m_firstCluster = firstCluster;
+  m_curCluster = 0;
+  m_curPosition = 0;
+  m_dataLength = initialExtentBytes;
+  m_validLength = 0;
+  m_flags &= ~FILE_FLAG_CONTIGUOUS;
+  m_flags |= FILE_FLAG_DIR_DIRTY;
+  setNoAutoExtend(true);
+  if (!lbdFillExtent(
+      0,
+      initialExtentBytes,
+      firstCluster,
+      clusterCount,
+      outExtent) || !sync()) {
+    return LbdAllocResult::IoError;
+  }
+  return LbdAllocResult::Ok;
+}
+//------------------------------------------------------------------------------
+LbdAllocResult ExFatFile::lbdAppendAdjacentExtent(
+    uint64_t extentBytes,
+    LbdExtent* outExtent) {
+  Cluster_t tailCluster = 0;
+  if (!outExtent || !isFile() || !isWritable() || isContiguous() ||
+      !m_firstCluster || !extentBytes ||
+      (extentBytes & (m_vol->bytesPerCluster() - 1)) ||
+      (m_dataLength & (m_vol->bytesPerCluster() - 1)) ||
+      !lbdFindTailCluster(&tailCluster)) {
+    return LbdAllocResult::BadState;
+  }
+  const uint64_t clusterCount64 = extentBytes >> m_vol->bytesPerClusterShift();
+  if (clusterCount64 == 0 || clusterCount64 > UINT32_MAX) {
+    return LbdAllocResult::BadState;
+  }
+  const uint32_t clusterCount = static_cast<uint32_t>(clusterCount64);
+  const Cluster_t firstCluster = tailCluster + 1;
+  if ((static_cast<uint64_t>(firstCluster - 2) + clusterCount) >
+      m_vol->clusterCount()) {
+    return LbdAllocResult::NoSpace;
+  }
+  const BitmapRangeState rangeState =
+      m_vol->bitmapRangeIsFree(firstCluster, clusterCount);
+  if (rangeState == BitmapRangeState::NotFree) {
+    return LbdAllocResult::WouldFragment;
+  }
+  if (rangeState != BitmapRangeState::Free) {
+    return LbdAllocResult::IoError;
+  }
+  if (!lbdWriteFatExtent(firstCluster, clusterCount) ||
+      !m_vol->bitmapAllocateExact(firstCluster, clusterCount) ||
+      !m_vol->fatPut(tailCluster, firstCluster)) {
+    return LbdAllocResult::IoError;
+  }
+
+  const uint64_t logicalStart = m_dataLength;
+  m_dataLength += extentBytes;
+  m_flags &= ~FILE_FLAG_CONTIGUOUS;
+  m_flags |= FILE_FLAG_DIR_DIRTY;
+  if (!lbdFillExtent(
+      logicalStart,
+      extentBytes,
+      firstCluster,
+      clusterCount,
+      outExtent) || !sync()) {
+    return LbdAllocResult::IoError;
+  }
+  return LbdAllocResult::Ok;
+}
+//------------------------------------------------------------------------------
+LbdAllocResult ExFatFile::lbdAppendFreeExtent(
+    uint64_t extentBytes,
+    Cluster_t preferredStartCluster,
+    uint32_t searchWindowClusters,
+    LbdExtent* outExtent) {
+  Cluster_t tailCluster = 0;
+  if (!outExtent || !isFile() || !isWritable() || isContiguous() ||
+      !m_firstCluster || !extentBytes ||
+      (extentBytes & (m_vol->bytesPerCluster() - 1)) ||
+      (m_dataLength & (m_vol->bytesPerCluster() - 1)) ||
+      !lbdFindTailCluster(&tailCluster)) {
+    return LbdAllocResult::BadState;
+  }
+  const uint64_t clusterCount64 = extentBytes >> m_vol->bytesPerClusterShift();
+  if (clusterCount64 == 0 || clusterCount64 > UINT32_MAX) {
+    return LbdAllocResult::BadState;
+  }
+  const uint32_t clusterCount = static_cast<uint32_t>(clusterCount64);
+  const Cluster_t searchStart = preferredStartCluster >= 2 ? preferredStartCluster : 0;
+  const Cluster_t firstCluster = m_vol->bitmapFind(searchStart, clusterCount);
+  if (firstCluster == 1) {
+    return LbdAllocResult::NoSpace;
+  }
+  if (firstCluster < 2) {
+    return LbdAllocResult::IoError;
+  }
+  if (searchWindowClusters && searchStart >= 2) {
+    const uint64_t windowEnd = static_cast<uint64_t>(searchStart) + searchWindowClusters;
+    if (firstCluster < searchStart || firstCluster >= windowEnd) {
+      return LbdAllocResult::NoSpace;
+    }
+  }
+  if (!lbdWriteFatExtent(firstCluster, clusterCount) ||
+      !m_vol->bitmapAllocateExact(firstCluster, clusterCount) ||
+      !m_vol->fatPut(tailCluster, firstCluster)) {
+    return LbdAllocResult::IoError;
+  }
+
+  const uint64_t logicalStart = m_dataLength;
+  m_dataLength += extentBytes;
+  m_flags &= ~FILE_FLAG_CONTIGUOUS;
+  m_flags |= FILE_FLAG_DIR_DIRTY;
+  if (!lbdFillExtent(
+      logicalStart,
+      extentBytes,
+      firstCluster,
+      clusterCount,
+      outExtent) || !sync()) {
+    return LbdAllocResult::IoError;
+  }
+  return LbdAllocResult::Ok;
 }
 //------------------------------------------------------------------------------
 bool ExFatFile::lbdCloseAfterRaw(uint64_t finalValidBytes) {
@@ -134,16 +406,21 @@ bool ExFatFile::lbdCloseAfterRaw(uint64_t finalValidBytes) {
 }
 //------------------------------------------------------------------------------
 bool ExFatFile::lbdCommitValidLength(uint64_t validBytes) {
-  if (!isFile() || !isWritable() || !isContiguous() ||
+  if (!isFile() || !isWritable() ||
       (validBytes & (m_vol->bytesPerSector() - 1)) ||
       validBytes > m_dataLength) {
     DBG_FAIL_MACRO;
     goto fail;
   }
-  m_curPosition = validBytes;
-  m_curCluster = validBytes
-      ? m_firstCluster + ((validBytes - 1) >> m_vol->bytesPerClusterShift())
-      : 0;
+  if (validBytes == 0) {
+    m_curPosition = 0;
+    m_curCluster = 0;
+  } else if (validBytes != m_curPosition && !seekSet(validBytes)) {
+    DBG_FAIL_MACRO;
+    goto fail;
+  } else {
+    m_curPosition = validBytes;
+  }
   m_validLength = validBytes;
   m_flags |= FILE_FLAG_DIR_DIRTY;
   return sync();
@@ -161,22 +438,27 @@ bool ExFatFile::lbdEndRawWrite() {
   return true;
 }
 //------------------------------------------------------------------------------
-bool ExFatFile::lbdMarkRawWritten(uint64_t newWriteOffset) {
-  if (!isFile() || !isWritable() || !isContiguous() ||
+bool ExFatFile::lbdMarkRawWritten(
+    uint64_t newWriteOffset,
+    const LbdExtent* activeExtent) {
+  if (!isFile() || !isWritable() || !activeExtent ||
       (newWriteOffset & (m_vol->bytesPerSector() - 1)) ||
       newWriteOffset > m_dataLength) {
     DBG_FAIL_MACRO;
     goto fail;
   }
+  if (newWriteOffset &&
+      (newWriteOffset <= activeExtent->logicalStartBytes ||
+       newWriteOffset > activeExtent->logicalStartBytes + activeExtent->lengthBytes)) {
+    DBG_FAIL_MACRO;
+    goto fail;
+  }
   m_curPosition = newWriteOffset;
   m_curCluster = newWriteOffset
-      ? m_firstCluster +
-            ((newWriteOffset - 1) >> m_vol->bytesPerClusterShift())
+      ? activeExtent->firstCluster +
+            ((newWriteOffset - 1 - activeExtent->logicalStartBytes) >>
+                m_vol->bytesPerClusterShift())
       : 0;
-  if (newWriteOffset > m_validLength) {
-    m_validLength = newWriteOffset;
-    m_flags |= FILE_FLAG_DIR_DIRTY;
-  }
   return true;
 
 fail:
@@ -193,8 +475,24 @@ bool ExFatFile::lbdRawSectorForOffset(uint64_t offset, Sector_t* sector) const {
   return true;
 }
 //------------------------------------------------------------------------------
+bool ExFatFile::lbdRawSectorForOffset(
+    uint64_t offset,
+    const LbdExtent* activeExtent,
+    Sector_t* sector) const {
+  if (!sector || !activeExtent || !activeExtent->lengthBytes ||
+      (offset & (m_vol->bytesPerSector() - 1)) ||
+      offset < activeExtent->logicalStartBytes ||
+      offset >= activeExtent->logicalStartBytes + activeExtent->lengthBytes ||
+      offset >= m_dataLength) {
+    return false;
+  }
+  *sector = activeExtent->firstSector +
+      ((offset - activeExtent->logicalStartBytes) >> m_vol->bytesPerSectorShift());
+  return true;
+}
+//------------------------------------------------------------------------------
 bool ExFatFile::lbdTruncateRaw(uint64_t length) {
-  if (!isFile() || !isWritable() || !isContiguous() ||
+  if (!isFile() || !isWritable() ||
       (length & (m_vol->bytesPerSector() - 1)) || length > m_dataLength) {
     DBG_FAIL_MACRO;
     goto fail;
