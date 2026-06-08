@@ -25,6 +25,30 @@
 #define DBG_FILE "ExFatPartition.cpp"
 #include "../common/DebugMacros.h"
 #include "ExFatLib.h"
+
+extern "C" uint8_t lb_service_background_tasks() __attribute__((weak));
+
+namespace {
+constexpr uint32_t LB_BACKGROUND_SERVICE_INTERVAL_US = 20000;
+
+void serviceBackgroundTasksDuringBitmapScan() {
+  if (!lb_service_background_tasks) {
+    return;
+  }
+
+  static uint32_t next_service_us = 0;
+  const uint32_t now_us = micros();
+  if (static_cast<int32_t>(now_us - next_service_us) < 0) {
+    return;
+  }
+
+  const uint8_t service_again_now = lb_service_background_tasks();
+  next_service_us = service_again_now
+      ? micros()
+      : micros() + LB_BACKGROUND_SERVICE_INTERVAL_US;
+}
+}  // namespace
+
 //------------------------------------------------------------------------------
 // return 0 if error, 1 if no space, else start cluster.
 Cluster_t ExFatPartition::bitmapFind(Cluster_t cluster, uint32_t count) {
@@ -39,6 +63,7 @@ Cluster_t ExFatPartition::bitmapFind(Cluster_t cluster, uint32_t count) {
   const uint8_t* cache;
   uint8_t mask = 1 << (start & 7);
   while (true) {
+    serviceBackgroundTasksDuringBitmapScan();
     Sector_t sector =
         m_clusterHeapStartSector + (endAlloc >> (m_bytesPerSectorShift + 3));
     cache = bitmapCachePrepare(sector, FsCache::CACHE_FOR_READ);
@@ -46,6 +71,9 @@ Cluster_t ExFatPartition::bitmapFind(Cluster_t cluster, uint32_t count) {
       return 0;
     }
     for (; i < sectorSize; i++) {
+      if ((i & 0X1F) == 0) {
+        serviceBackgroundTasksDuringBitmapScan();
+      }
       for (; mask; mask <<= 1) {
         endAlloc++;
         if (!(mask & cache[i])) {
@@ -100,12 +128,16 @@ bool ExFatPartition::bitmapModify(Cluster_t cluster, uint32_t count,
   sector = m_clusterHeapStartSector + (start >> (m_bytesPerSectorShift + 3));
   i = (start >> 3) & m_sectorMask;
   while (true) {
+    serviceBackgroundTasksDuringBitmapScan();
     cache = bitmapCachePrepare(sector++, FsCache::CACHE_FOR_WRITE);
     if (!cache) {
       DBG_FAIL_MACRO;
       goto fail;
     }
     for (; i < m_bytesPerSector; i++) {
+      if ((i & 0X1F) == 0) {
+        serviceBackgroundTasksDuringBitmapScan();
+      }
       for (; mask; mask <<= 1) {
         if (value == static_cast<bool>(cache[i] & mask)) {
           DBG_FAIL_MACRO;
@@ -143,12 +175,16 @@ BitmapRangeState ExFatPartition::bitmapRangeIsFree(
   size_t i = (start >> 3) & m_sectorMask;
   uint8_t mask = 1 << (start & 7);
   while (count) {
+    serviceBackgroundTasksDuringBitmapScan();
     const uint8_t* cache = bitmapCachePrepare(sector++, FsCache::CACHE_FOR_READ);
     if (!cache) {
       DBG_FAIL_MACRO;
       return BitmapRangeState::Error;
     }
     for (; i < sectorSize; i++) {
+      if ((i & 0X1F) == 0) {
+        serviceBackgroundTasksDuringBitmapScan();
+      }
       for (; mask; mask <<= 1) {
         if (cache[i] & mask) {
           return BitmapRangeState::NotFree;

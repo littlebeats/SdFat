@@ -626,6 +626,7 @@ bool SdSpiCard::readData(uint8_t* dst, size_t count) {
   // wait for start sector token
   Timeout timeout(SD_READ_TIMEOUT);
   while ((m_status = spiReceive()) == 0XFF) {
+    (void)serviceBackgroundTasksDuringSdBusy();
     if (timeout.timedOut()) {
       sdError(SD_CARD_ERROR_READ_TIMEOUT);
       goto fail;
