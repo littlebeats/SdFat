@@ -296,13 +296,33 @@ LbdAllocResult ExFatFile::lbdAppendAdjacentExtent(
     uint64_t extentBytes,
     LbdExtent* outExtent) {
   Cluster_t tailCluster = 0;
-  if (!outExtent || !isFile() || !isWritable() || isContiguous() ||
-      !m_firstCluster || !extentBytes ||
-      (extentBytes & (m_vol->bytesPerCluster() - 1)) ||
-      (m_dataLength & (m_vol->bytesPerCluster() - 1)) ||
-      !lbdFindTailCluster(&tailCluster)) {
+  if (!lbdFindTailCluster(&tailCluster)) {
     return LbdAllocResult::BadState;
   }
+  return lbdAppendAdjacentExtentAfterTail(tailCluster, extentBytes, outExtent);
+}
+//------------------------------------------------------------------------------
+LbdAllocResult ExFatFile::lbdAppendAdjacentExtentAfterTail(
+    Cluster_t tailCluster,
+    uint64_t extentBytes,
+    LbdExtent* outExtent) {
+  if (!outExtent || !isFile() || !isWritable() || isContiguous() || !m_vol ||
+      !m_firstCluster || tailCluster < 2 ||
+      static_cast<uint64_t>(tailCluster - 2) >= m_vol->clusterCount() ||
+      !extentBytes || (extentBytes & (m_vol->bytesPerCluster() - 1)) ||
+      (m_dataLength & (m_vol->bytesPerCluster() - 1))) {
+    return LbdAllocResult::BadState;
+  }
+
+  Cluster_t nextCluster = 0;
+  const int8_t tailStatus = m_vol->fatGet(tailCluster, &nextCluster);
+  if (tailStatus < 0) {
+    return LbdAllocResult::IoError;
+  }
+  if (tailStatus != 0) {
+    return LbdAllocResult::BadState;
+  }
+
   const uint64_t clusterCount64 = extentBytes >> m_vol->bytesPerClusterShift();
   if (clusterCount64 == 0 || clusterCount64 > UINT32_MAX) {
     return LbdAllocResult::BadState;
@@ -348,13 +368,40 @@ LbdAllocResult ExFatFile::lbdAppendFreeExtent(
     uint32_t searchWindowClusters,
     LbdExtent* outExtent) {
   Cluster_t tailCluster = 0;
-  if (!outExtent || !isFile() || !isWritable() || isContiguous() ||
-      !m_firstCluster || !extentBytes ||
-      (extentBytes & (m_vol->bytesPerCluster() - 1)) ||
-      (m_dataLength & (m_vol->bytesPerCluster() - 1)) ||
-      !lbdFindTailCluster(&tailCluster)) {
+  if (!lbdFindTailCluster(&tailCluster)) {
     return LbdAllocResult::BadState;
   }
+  return lbdAppendFreeExtentAfterTail(
+      tailCluster,
+      extentBytes,
+      preferredStartCluster,
+      searchWindowClusters,
+      outExtent);
+}
+//------------------------------------------------------------------------------
+LbdAllocResult ExFatFile::lbdAppendFreeExtentAfterTail(
+    Cluster_t tailCluster,
+    uint64_t extentBytes,
+    Cluster_t preferredStartCluster,
+    uint32_t searchWindowClusters,
+    LbdExtent* outExtent) {
+  if (!outExtent || !isFile() || !isWritable() || isContiguous() || !m_vol ||
+      !m_firstCluster || tailCluster < 2 ||
+      static_cast<uint64_t>(tailCluster - 2) >= m_vol->clusterCount() ||
+      !extentBytes || (extentBytes & (m_vol->bytesPerCluster() - 1)) ||
+      (m_dataLength & (m_vol->bytesPerCluster() - 1))) {
+    return LbdAllocResult::BadState;
+  }
+
+  Cluster_t nextCluster = 0;
+  const int8_t tailStatus = m_vol->fatGet(tailCluster, &nextCluster);
+  if (tailStatus < 0) {
+    return LbdAllocResult::IoError;
+  }
+  if (tailStatus != 0) {
+    return LbdAllocResult::BadState;
+  }
+
   const uint64_t clusterCount64 = extentBytes >> m_vol->bytesPerClusterShift();
   if (clusterCount64 == 0 || clusterCount64 > UINT32_MAX) {
     return LbdAllocResult::BadState;

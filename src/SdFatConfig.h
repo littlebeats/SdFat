@@ -422,8 +422,8 @@ typedef uint8_t SdCsPin_t;
  * writes that are not a multiple of 512 bytes.
  */
 #ifdef __arm__
-// LB recorder: reclaim one 512-byte SRAM cache; bitmap sectors use data cache.
-#define USE_EXFAT_BITMAP_CACHE 0
+// LB recorder: keep bitmap traffic out of the data/FAT directory cache.
+#define USE_EXFAT_BITMAP_CACHE 1
 #else  // __arm__
 #define USE_EXFAT_BITMAP_CACHE 0
 #endif  // __arm__

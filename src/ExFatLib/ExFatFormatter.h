@@ -38,10 +38,16 @@ class ExFatFormatter {
    * \param[in] dev Block device for volume.
    * \param[in] secBuf buffer for writing to volume.
    * \param[in] pr Print device for progress output.
+   * \param[in] sectorsPerClusterShift Optional cluster-size override.  Zero
+   * means choose automatically from device size.
    *
    * \return true for success or false for failure.
    */
-  bool format(FsBlockDevice* dev, uint8_t* secBuf, print_t* pr = nullptr);
+  bool format(
+      FsBlockDevice* dev,
+      uint8_t* secBuf,
+      print_t* pr = nullptr,
+      uint8_t sectorsPerClusterShift = 0);
 
  private:
   bool syncUpcase();

@@ -48,7 +48,11 @@ const Cluster_t ROOT_CLUSTER = 4;
   if (pr) pr->write(str)
 #endif  // PRINT_FORMAT_PROGRESS
 //------------------------------------------------------------------------------
-bool ExFatFormatter::format(FsBlockDevice* dev, uint8_t* secBuf, print_t* pr) {
+bool ExFatFormatter::format(
+    FsBlockDevice* dev,
+    uint8_t* secBuf,
+    print_t* pr,
+    uint8_t requestedSectorsPerClusterShift) {
 #if !PRINT_FORMAT_PROGRESS
   (void)pr;
 #endif  //  !PRINT_FORMAT_PROGRESS
@@ -66,6 +70,7 @@ bool ExFatFormatter::format(FsBlockDevice* dev, uint8_t* secBuf, print_t* pr) {
   uint32_t m;
   uint32_t ns;
   uint32_t partitionOffset;
+  uint32_t progressInterval;
   Sector_t sector;
   Sector_t sectorsPerCluster;
   uint32_t volumeLength;
@@ -85,7 +90,14 @@ bool ExFatFormatter::format(FsBlockDevice* dev, uint8_t* secBuf, print_t* pr) {
   // Determine partition layout.
   for (m = 1, vs = 0; m && sectorCount > m; m <<= 1, vs++) {
   }
-  sectorsPerClusterShift = vs < 29 ? 8 : (vs - 11) / 2;
+  sectorsPerClusterShift = requestedSectorsPerClusterShift
+      ? requestedSectorsPerClusterShift
+      : (vs < 29 ? 8 : (vs - 11) / 2);
+  if (sectorsPerClusterShift > 16) {
+    writeMsg(pr, "Invalid sectors-per-cluster shift\r\n");
+    DBG_FAIL_MACRO;
+    goto fail;
+  }
   sectorsPerCluster = 1UL << sectorsPerClusterShift;
   fatLength = 1UL << (vs < 27 ? 13 : (vs + 1) / 2);
   fatOffset = fatLength;
@@ -201,6 +213,7 @@ bool ExFatFormatter::format(FsBlockDevice* dev, uint8_t* secBuf, print_t* pr) {
   writeMsg(pr, "Writing FAT ");
   sector = partitionOffset + fatOffset;
   ns = ((clusterCount + 2) * 4 + BYTES_PER_SECTOR - 1) / BYTES_PER_SECTOR;
+  progressInterval = ns >= 32 ? ns / 32 : 1;
 
   memset(secBuf, 0, BYTES_PER_SECTOR);
   // Allocate two reserved clusters, bitmap, upcase, and root clusters.
@@ -209,7 +222,7 @@ bool ExFatFormatter::format(FsBlockDevice* dev, uint8_t* secBuf, print_t* pr) {
     secBuf[i] = 0XFF;
   }
   for (uint32_t i = 0; i < ns; i++) {
-    if (i % (ns / 32) == 0) {
+    if (i % progressInterval == 0) {
       writeMsg(pr, ".");
     }
     if (!dev->writeSector(sector + i, secBuf)) {

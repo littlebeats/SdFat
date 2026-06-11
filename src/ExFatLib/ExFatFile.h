@@ -388,8 +388,20 @@ class ExFatFile {
   LbdAllocResult lbdAppendAdjacentExtent(
       uint64_t extentBytes,
       LbdExtent* outExtent);
+  /** Append the next LBD extent after a caller-tracked allocation tail. */
+  LbdAllocResult lbdAppendAdjacentExtentAfterTail(
+      Cluster_t tailCluster,
+      uint64_t extentBytes,
+      LbdExtent* outExtent);
   /** Append a non-adjacent contiguous free LBD extent. */
   LbdAllocResult lbdAppendFreeExtent(
+      uint64_t extentBytes,
+      Cluster_t preferredStartCluster,
+      uint32_t searchWindowClusters,
+      LbdExtent* outExtent);
+  /** Append a non-adjacent free LBD extent after a caller-tracked tail. */
+  LbdAllocResult lbdAppendFreeExtentAfterTail(
+      Cluster_t tailCluster,
       uint64_t extentBytes,
       Cluster_t preferredStartCluster,
       uint32_t searchWindowClusters,
